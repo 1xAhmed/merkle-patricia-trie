@@ -57,7 +57,7 @@ func (kv *MemoryAdapter) Delete(key []byte) error {
 	if _, ok := kv.store[keyHex]; ok {
 		delete(kv.store, keyHex)
 	} else {
-		return errors.New(fmt.Sprintf("[MemKV] key not found: %s", keyHex))
+		return fmt.Errorf("[MemKV] key not found: %s", keyHex)
 	}
 	return nil
 }
