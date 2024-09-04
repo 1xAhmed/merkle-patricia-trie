@@ -1,8 +1,13 @@
 package mpt
 
 import (
+	"encoding/json"
 	"errors"
 	fmt "fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/vldmkr/merkle-patricia-trie/crypto"
@@ -163,3 +168,99 @@ func (sn *ShortNode) Save(store storage.StorageAdapter) {
 func (hn *HashNode) Hash() []byte                      { return []byte(*hn) }
 func (hn *HashNode) Serialize() []byte                 { return nil }
 func (hn *HashNode) Save(store storage.StorageAdapter) {}
+
+// Snapshot Management
+
+var snapshotLock sync.RWMutex
+
+// CreateSnapshot collects data from all nodes and flattens it into a straightforward structure.
+func CreateSnapshot(nodes []Node) map[string][]byte {
+	snapshotLock.RLock()
+	defer snapshotLock.RUnlock()
+
+	snapshot := make(map[string][]byte)
+	for _, node := range nodes {
+		data := node.Serialize()
+		snapshot[string(node.Hash())] = data
+	}
+	return snapshot
+}
+
+// ExportSnapshot serializes the snapshot into a format that can be easily stored and writes it to a file.
+func ExportSnapshot(filename string, nodes []Node) error {
+	snapshot := CreateSnapshot(nodes)
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.Write(data)
+	return err
+}
+
+// ImportSnapshot reads the snapshot file, deserializes it, and uses the data to restore the system's state.
+func ImportSnapshot(filename string) (map[string]Node, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	data := make(map[string][]byte)
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&data)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := make(map[string]Node)
+	for hash, nodeData := range data {
+		node, err := DeserializeNode(nodeData)
+		if err != nil {
+			return nil, err
+		}
+		nodes[hash] = node
+	}
+	return nodes, nil
+}
+
+// ValidateSnapshot validates the snapshot to ensure consistency.
+func ValidateSnapshot(snapshot map[string]Node) bool {
+	// Implement validation logic here
+	// For example, check if all nodes have valid hashes and serialized data
+	return true
+}
+
+// PruneOldSnapshots prunes old snapshots to maintain efficiency.
+func PruneOldSnapshots(directory string, maxSnapshots int) error {
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+
+	if len(files) <= maxSnapshots {
+		return nil
+	}
+
+	// Sort files by modification time
+	sort.Slice(files, func(i, j int) bool {
+		infoI, _ := files[i].Info()
+		infoJ, _ := files[j].Info()
+		return infoI.ModTime().Before(infoJ.ModTime())
+	})
+
+	// Remove oldest files
+	for i := 0; i < len(files)-maxSnapshots; i++ {
+		err := os.Remove(filepath.Join(directory, files[i].Name()))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

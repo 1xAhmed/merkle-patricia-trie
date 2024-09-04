@@ -2,6 +2,7 @@ package mpt
 
 import (
 	"bytes"
+	"os"
 	"testing"
 
 	"github.com/vldmkr/merkle-patricia-trie/storage"
@@ -478,5 +479,78 @@ func TestPutCommitGetLevelDB(t *testing.T) {
 	}
 	if string(data) != "F" {
 		t.Error("key 12345678 wrong")
+	}
+}
+
+func TestCreateSnapshot(t *testing.T) {
+	// Initialize nodes
+	nodes := []Node{
+		&FullNode{},
+		&ShortNode{Key: []byte("key1"), Value: &ValueNode{Value: []byte("value1")}},
+		&ValueNode{Value: []byte("value2")},
+	}
+
+	// Create snapshot
+	snapshot := CreateSnapshot(nodes)
+
+	// Validate snapshot
+	if len(snapshot) != 3 {
+		t.Errorf("Expected 3 nodes in snapshot, got %d", len(snapshot))
+	}
+}
+
+func TestExportSnapshot(t *testing.T) {
+	// Initialize nodes
+	nodes := []Node{
+		&FullNode{},
+		&ShortNode{Key: []byte("key1"), Value: &ValueNode{Value: []byte("value1")}},
+		&ValueNode{Value: []byte("value2")},
+	}
+
+	// Export snapshot
+	err := ExportSnapshot("test_snapshot.json", nodes)
+	if err != nil {
+		t.Fatalf("Failed to export snapshot: %v", err)
+	}
+
+	// Clean up
+	defer os.Remove("test_snapshot.json")
+}
+
+func TestImportSnapshot(t *testing.T) {
+	// Initialize nodes
+	nodes := []Node{
+		&FullNode{},
+		&ShortNode{Key: []byte("key1"), Value: &ValueNode{Value: []byte("value1")}},
+		&ValueNode{Value: []byte("value2")},
+	}
+
+	// Export snapshot
+	err := ExportSnapshot("test_snapshot.json", nodes)
+	if err != nil {
+		t.Fatalf("Failed to export snapshot: %v", err)
+	}
+	defer os.Remove("test_snapshot.json")
+
+	// Import snapshot
+	importedNodes, err := ImportSnapshot("test_snapshot.json")
+	if err != nil {
+		t.Fatalf("Failed to import snapshot: %v", err)
+	}
+
+	// Validate imported nodes
+	if len(importedNodes) != 3 {
+		t.Errorf("Expected 3 nodes in imported snapshot, got %d", len(importedNodes))
+	}
+
+	// Additional validation to ensure the nodes are correctly imported
+	for _, node := range nodes {
+		hash := string(node.Hash())
+		importedNode, exists := importedNodes[hash]
+		if !exists {
+			t.Errorf("Node with hash %s not found in imported snapshot", hash)
+		} else if string(importedNode.Hash()) != hash {
+			t.Errorf("Imported node hash mismatch: expected %s, got %s", hash, importedNode.Hash())
+		}
 	}
 }
