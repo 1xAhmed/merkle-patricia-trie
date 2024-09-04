@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,11 +63,17 @@ func (kv *MemoryAdapter) Delete(key []byte) error {
 }
 
 func (kv *MemoryAdapter) BatchPut(kvs [][2][]byte) error {
+	log.Println("BatchPut: Acquiring lock")
 	kv.lock.Lock()
 	defer kv.lock.Unlock()
-	for i := range kvs {
-		kv.Put(kvs[i][0], kvs[i][1])
+	log.Println("BatchPut: Lock acquired")
+
+	for _, kvp := range kvs {
+		keyHex := hex.EncodeToString(kvp[0])
+		kv.store[keyHex] = kvp[1]
+		log.Printf("BatchPut: Stored key %s", keyHex)
 	}
+	log.Println("BatchPut: Completed")
 	return nil
 }
 
@@ -117,7 +124,6 @@ func (kv *MemoryAdapter) ImportSnapshot(filename string) error {
 	kv.store = data
 	return nil
 }
-
 
 func (kv *MemoryAdapter) PruneOldSnapshots(directory string, maxSnapshots int) error {
 	files, err := os.ReadDir(directory)

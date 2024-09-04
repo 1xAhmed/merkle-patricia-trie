@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"log"
 	"os"
 	"testing"
 )
@@ -54,6 +55,8 @@ func TestMemoryAdapter(t *testing.T) {
 }
 
 func TestBatchPut(t *testing.T) {
+	log.Println("TestBatchPut: Starting test")
+
 	// Initialize the MemoryAdapter
 	kv := NewMemoryAdapter()
 
@@ -62,18 +65,42 @@ func TestBatchPut(t *testing.T) {
 		{[]byte("key1"), []byte("value1")},
 		{[]byte("key2"), []byte("value2")},
 	}
+	log.Println("TestBatchPut: Calling BatchPut")
 	err := kv.BatchPut(kvs)
 	if err != nil {
 		t.Fatalf("Failed to batch put data: %v", err)
 	}
+	log.Println("TestBatchPut: BatchPut completed")
 
 	// Validate the data
 	value, err := kv.Get([]byte("key1"))
 	if err != nil || string(value) != "value1" {
 		t.Fatalf("Expected value1, got %s (err: %v)", string(value), err)
 	}
+	log.Println("TestBatchPut: Validated key1")
+
 	value, err = kv.Get([]byte("key2"))
 	if err != nil || string(value) != "value2" {
 		t.Fatalf("Expected value2, got %s (err: %v)", string(value), err)
+	}
+	log.Println("TestBatchPut: Validated key2")
+
+	log.Println("TestBatchPut: Test completed successfully")
+}
+
+func TestGet(t *testing.T) {
+	// Initialize the MemoryAdapter
+	kv := NewMemoryAdapter()
+
+	// Add some data to the MemoryAdapter
+	err := kv.Put([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to put data: %v", err)
+	}
+
+	// Get the value
+	value, err := kv.Get([]byte("key1"))
+	if err != nil || string(value) != "value1" {
+		t.Fatalf("Expected value1, got %s (err: %v)", string(value), err)
 	}
 }
