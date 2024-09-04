@@ -2,8 +2,12 @@ package storage
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
-	fmt "fmt"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -25,9 +29,8 @@ func (kv *MemoryAdapter) Get(key []byte) ([]byte, error) {
 	keyHex := hex.EncodeToString(key)
 	if v, ok := kv.store[keyHex]; ok {
 		return v, nil
-	} else {
-		return nil, errors.New(fmt.Sprintf("[MemKV] key not found: %s", keyHex))
 	}
+	return nil, errors.New("key not found")
 }
 
 func (kv *MemoryAdapter) Put(key, value []byte) error {
@@ -63,6 +66,82 @@ func (kv *MemoryAdapter) BatchPut(kvs [][2][]byte) error {
 	defer kv.lock.Unlock()
 	for i := range kvs {
 		kv.Put(kvs[i][0], kvs[i][1])
+	}
+	return nil
+}
+
+func (kv *MemoryAdapter) CreateSnapshot() map[string][]byte {
+	kv.lock.RLock()
+	defer kv.lock.RUnlock()
+
+	snapshot := make(map[string][]byte)
+	for k, v := range kv.store {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
+func (kv *MemoryAdapter) ExportSnapshot(filename string) error {
+	snapshot := kv.CreateSnapshot()
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.Write(data)
+	return err
+}
+
+func (kv *MemoryAdapter) ImportSnapshot(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	data := make(map[string][]byte)
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&data)
+	if err != nil {
+		return err
+	}
+
+	kv.lock.Lock()
+	defer kv.lock.Unlock()
+	kv.store = data
+	return nil
+}
+
+
+func (kv *MemoryAdapter) PruneOldSnapshots(directory string, maxSnapshots int) error {
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+
+	if len(files) <= maxSnapshots {
+		return nil
+	}
+
+	// Sort files by modification time
+	sort.Slice(files, func(i, j int) bool {
+		infoI, _ := files[i].Info()
+		infoJ, _ := files[j].Info()
+		return infoI.ModTime().Before(infoJ.ModTime())
+	})
+
+	// Remove oldest files
+	for i := 0; i < len(files)-maxSnapshots; i++ {
+		err := os.Remove(filepath.Join(directory, files[i].Name()))
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
