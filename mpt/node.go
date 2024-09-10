@@ -1,6 +1,8 @@
 package mpt
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	fmt "fmt"
@@ -173,26 +175,57 @@ func (hn *HashNode) Save(store storage.StorageAdapter) {}
 
 var snapshotLock sync.RWMutex
 
-// CreateSnapshot collects data from all nodes and flattens it into a straightforward structure.
-func CreateSnapshot(nodes []Node) map[string][]byte {
+func (t *Trie) CreateSnapshot() map[string][]byte {
 	snapshotLock.RLock()
 	defer snapshotLock.RUnlock()
 
 	snapshot := make(map[string][]byte)
-	for _, node := range nodes {
+	var collectNodes func(Node)
+	collectNodes = func(node Node) {
+		if node == nil {
+			return
+		}
 		data := node.Serialize()
 		snapshot[string(node.Hash())] = data
+
+		switch n := node.(type) {
+		case *FullNode:
+			for _, child := range n.Children {
+				collectNodes(child)
+			}
+		case *ShortNode:
+			collectNodes(n.Value)
+		}
 	}
+
+	collectNodes(t.root)
 	return snapshot
 }
 
-// ExportSnapshot serializes the snapshot into a format that can be easily stored and writes it to a file.
-func ExportSnapshot(filename string, nodes []Node) error {
-	snapshot := CreateSnapshot(nodes)
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return err
+// Iterate applies a function to each key-value pair in the trie.
+func (t *Trie) Iterate(fn func(key, value []byte)) {
+	var iterate func(node Node, prefix []byte)
+	iterate = func(node Node, prefix []byte) {
+		switch n := node.(type) {
+		case *FullNode:
+			for i, child := range n.Children {
+				if child != nil {
+					iterate(child, append(prefix, byte(i)))
+				}
+			}
+		case *ShortNode:
+			iterate(n.Value, append(prefix, n.Key...))
+		case *ValueNode:
+			fn(prefix, n.Value)
+		}
 	}
+	iterate(t.root, nil)
+}
+func (t *Trie) ExportSnapshot(filename string) error {
+	data := make(map[string]string)
+	t.Iterate(func(key, value []byte) {
+		data[string(key)] = base64.StdEncoding.EncodeToString(value)
+	})
 
 	file, err := os.Create(filename)
 	if err != nil {
@@ -200,40 +233,46 @@ func ExportSnapshot(filename string, nodes []Node) error {
 	}
 	defer file.Close()
 
-	_, err = file.Write(data)
-	return err
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(data)
 }
 
-// ImportSnapshot reads the snapshot file, deserializes it, and uses the data to restore the system's state.
-func ImportSnapshot(filename string) (map[string]Node, error) {
+func (t *Trie) ImportSnapshot(filename string) error {
+	fmt.Println("Starting ImportSnapshot")
 	file, err := os.Open(filename)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 
-	data := make(map[string][]byte)
+	data := make(map[string]string)
 	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&data)
-	if err != nil {
-		return nil, err
+	if err := decoder.Decode(&data); err != nil {
+		return err
 	}
 
-	nodes := make(map[string]Node)
-	for hash, nodeData := range data {
-		node, err := DeserializeNode(nodeData)
+	for key, value := range data {
+		decodedValue, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		nodes[hash] = node
+		t.Put([]byte(key), decodedValue)
 	}
-	return nodes, nil
+	return nil
 }
 
-// ValidateSnapshot validates the snapshot to ensure consistency.
 func ValidateSnapshot(snapshot map[string]Node) bool {
-	// Implement validation logic here
-	// For example, check if all nodes have valid hashes and serialized data
+	for hash, node := range snapshot {
+		if string(node.Hash()) != hash {
+			return false
+		}
+		data := node.Serialize()
+		calculatedHash := crypto.MainHash(data)
+		if !bytes.Equal(calculatedHash[:], node.Hash()) {
+			return false
+		}
+	}
 	return true
 }
 
