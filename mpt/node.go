@@ -1,8 +1,15 @@
 package mpt
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	fmt "fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/vldmkr/merkle-patricia-trie/crypto"
@@ -163,3 +170,136 @@ func (sn *ShortNode) Save(store storage.StorageAdapter) {
 func (hn *HashNode) Hash() []byte                      { return []byte(*hn) }
 func (hn *HashNode) Serialize() []byte                 { return nil }
 func (hn *HashNode) Save(store storage.StorageAdapter) {}
+
+// Snapshot Management
+
+var snapshotLock sync.RWMutex
+
+func (t *Trie) CreateSnapshot() map[string][]byte {
+	snapshotLock.RLock()
+	defer snapshotLock.RUnlock()
+
+	snapshot := make(map[string][]byte)
+	var collectNodes func(Node)
+	collectNodes = func(node Node) {
+		if node == nil {
+			return
+		}
+		data := node.Serialize()
+		snapshot[string(node.Hash())] = data
+
+		switch n := node.(type) {
+		case *FullNode:
+			for _, child := range n.Children {
+				collectNodes(child)
+			}
+		case *ShortNode:
+			collectNodes(n.Value)
+		}
+	}
+
+	collectNodes(t.root)
+	return snapshot
+}
+
+// Iterate applies a function to each key-value pair in the trie.
+func (t *Trie) Iterate(fn func(key, value []byte)) {
+	var iterate func(node Node, prefix []byte)
+	iterate = func(node Node, prefix []byte) {
+		switch n := node.(type) {
+		case *FullNode:
+			for i, child := range n.Children {
+				if child != nil {
+					iterate(child, append(prefix, byte(i)))
+				}
+			}
+		case *ShortNode:
+			iterate(n.Value, append(prefix, n.Key...))
+		case *ValueNode:
+			fn(prefix, n.Value)
+		}
+	}
+	iterate(t.root, nil)
+}
+func (t *Trie) ExportSnapshot(filename string) error {
+	data := make(map[string]string)
+	t.Iterate(func(key, value []byte) {
+		data[string(key)] = base64.StdEncoding.EncodeToString(value)
+	})
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(data)
+}
+
+func (t *Trie) ImportSnapshot(filename string) error {
+	fmt.Println("Starting ImportSnapshot")
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	data := make(map[string]string)
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&data); err != nil {
+		return err
+	}
+
+	for key, value := range data {
+		decodedValue, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return err
+		}
+		t.Put([]byte(key), decodedValue)
+	}
+	return nil
+}
+
+func ValidateSnapshot(snapshot map[string]Node) bool {
+	for hash, node := range snapshot {
+		if string(node.Hash()) != hash {
+			return false
+		}
+		data := node.Serialize()
+		calculatedHash := crypto.MainHash(data)
+		if !bytes.Equal(calculatedHash[:], node.Hash()) {
+			return false
+		}
+	}
+	return true
+}
+
+// PruneOldSnapshots prunes old snapshots to maintain efficiency.
+func PruneOldSnapshots(directory string, maxSnapshots int) error {
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+
+	if len(files) <= maxSnapshots {
+		return nil
+	}
+
+	// Sort files by modification time
+	sort.Slice(files, func(i, j int) bool {
+		infoI, _ := files[i].Info()
+		infoJ, _ := files[j].Info()
+		return infoI.ModTime().Before(infoJ.ModTime())
+	})
+
+	// Remove oldest files
+	for i := 0; i < len(files)-maxSnapshots; i++ {
+		err := os.Remove(filepath.Join(directory, files[i].Name()))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
